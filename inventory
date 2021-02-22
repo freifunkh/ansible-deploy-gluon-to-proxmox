@@ -1,0 +1,7 @@
+---
+all:
+  hosts:
+    mnesia:
+      ansible_host: mnesia
+
+  
