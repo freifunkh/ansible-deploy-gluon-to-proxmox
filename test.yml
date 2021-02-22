@@ -39,10 +39,10 @@
       block:
 
         # - name: debug
-        #  debug: var=result
+        #  debug: var=proxmox_create
         # TASK [debug] ****************************
         # ok: [mnesia] => {
-        #     "result": {
+        #     "proxmox_create": {
         #         "changed": true,
         #         "devices": {
         #             "ide1": "local-hdd:vm-106-disk-0"
