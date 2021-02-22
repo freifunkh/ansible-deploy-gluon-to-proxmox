@@ -5,8 +5,8 @@
     storage_group: local-hdd
     gluon_image_url: https://hannover.freifunk.net/download/Router-Firmware/Erstinstallation/gluon-ffh-vH21-x86-64.img.gz
   tasks:
-    - name: Ensure specified storage_group an zfs volume
-      command: 'grep "zfspool: {{storage_group}}" /etc/pve/storage.cfg'
+    - name: Ensure specified storage_group {{storage_group}} is a zfs pool
+      command: "grep '^zfspool: {{storage_group}}$' /etc/pve/storage.cfg"
       changed_when: False
 
     - name: Get the pool of storage_group
