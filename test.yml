@@ -4,6 +4,8 @@
   vars:
     storage_group: local-hdd
     gluon_image_url: https://hannover.freifunk.net/download/Router-Firmware/Erstinstallation/gluon-ffh-vH21-x86-64.img.gz
+    wan_bridge: vmbr0
+    gluon_hostname: fftestnode1
   tasks:
     - name: Ensure specified storage_group {{storage_group}} is a zfs pool
       command: "grep '^zfspool: {{storage_group}}$' /etc/pve/storage.cfg"
@@ -16,7 +18,14 @@
 
     - name: Store zfs pool in variable zfs_pool
       set_fact:
-          zfs_pool: "{{zfs_pool_stdout.stdout_lines[0]}}"
+        zfs_pool: "{{zfs_pool_stdout.stdout_lines[0]}}"
+
+    # This is necessary to set the bridge client_bridge for the proxmox statement.
+    # As the vmid is not known yet, we have to find it out here.
+    - name: Predict next vmid
+      command: /usr/bin/pvesh get /cluster/nextid
+      register: next_vmid
+      changed_when: False
 
     - name: Create new VM with minimal options
       community.general.proxmox_kvm:
@@ -24,19 +33,35 @@
         api_user: ansible-test@pve
         api_password: "{{ proxmox_api_password }}"
         api_host: localhost
-        name: fftestnode1
+        name: "{{ gluon_hostname }}"
         node: mnesia
         format: raw
         ide:
           ide1: '{{storage_group}}:1,format=raw'
         net:
-          net0: 'e1000,bridge=vmbr1'
-          net1: 'e1000,bridge=vmbr1'
+          net0: 'e1000,bridge=vmbr{{ 20000 + (next_vmid.stdout_lines[0] | int) }}'
+          net1: 'e1000,bridge={{ wan_bridge }}'
       register: proxmox_create
 
     - name: Install Gluon Image
       when: proxmox_create.changed
       block:
+
+        # Warning: The proxmox_create variable always contains a "vmid". However
+        #          the "vmid" is wrong, if the node was existing before. Therefore
+        #          the variable should only be used if proxmox_create.changed.
+        - name: Set vmid variable
+          set_fact:
+            vmid: "{{ proxmox_create.vmid }}"
+
+        - name: Set client_bridge variable
+          set_fact:
+            client_bridge: "vmbr{{ 20000 + (vmid | int) }}"
+
+        - name: Ensure client_bridge {{ client_bridge }}
+          include_tasks: ensure_bridge.yml
+          vars:
+            bridge_if: "{{ client_bridge }}"
 
         # - name: debug
         #  debug: var=proxmox_create
@@ -69,7 +94,7 @@
             url: "{{ gluon_image_url }}"
             dest: /tmp/gluon_image.gz
 
-        - name: Unzip to /dev/zvol/{{ zfs_pool}}/{{ zfs_volume}}
+        - name: Unzip to /dev/zvol/{{ zfs_pool }}/{{ zfs_volume }}
           shell: "gunzip /tmp/gluon_image.gz -c | dd iflag=fullblock of=/dev/zvol/{{ zfs_pool}}/{{ zfs_volume}} bs=4M"
 
     - name: Start VM
@@ -81,3 +106,27 @@
         name: fftestnode1
         node: mnesia
         state: started
+
+    - name: Configure the Gluon Image
+      when: proxmox_create.changed
+      block:
+        - name: Temporarily add config mode ip 192.168.1.2/24 to client_bridge
+          # "ip addr replace" adds or replaces the ip
+          command: "/sbin/ip addr replace 192.168.1.2/24 dev {{ client_bridge }}"
+
+        - name: Wait for ssh on node to become reachable
+          # "nc -z" just connects and closes the connection then.
+          shell: "while ! nc -z 192.168.1.1 22; do echo nope; done"
+
+        # TODO: Do more configureation here...
+        - name: Leave config mode
+          command: |
+            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+              pretty-hostname '{{ gluon_hostname }}'
+              uci set gluon-setup-mode.@setup_mode[0].configured='1'
+              uci commit
+              reboot
+            "
+
+        - name: Remove config mode ip 192.168.1.2/24 to client_bridge
+          command: "/sbin/ip a d 192.168.1.2/24 dev {{ client_bridge }}"

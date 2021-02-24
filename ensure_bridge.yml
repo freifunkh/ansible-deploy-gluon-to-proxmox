@@ -1,0 +1,21 @@
+---
+- name: Ensure {{ bridge_if }} in /etc/network/interfaces
+  blockinfile:
+    path: /etc/network/interfaces
+    marker: "# {mark} ANSIBLE MANAGED BLOCK {{bridge_if}}"
+    block: |
+      auto {{ bridge_if }}
+      iface {{ bridge_if }} inet manual
+        bridge-ports none
+        bridge-stp off
+        bridge-fd 0
+      # freifunk client bridge
+
+- name: Check if {{ bridge_if }} is already ifup'ed
+  stat:
+    path: "/sys/class/net/{{bridge_if}}"
+  register: bridge_if_is_ifuped
+
+- name: Ifup {{ bridge_if }}
+  command: "/sbin/ifup {{bridge_if}}"
+  when: not bridge_if_is_ifuped.stat.exists
