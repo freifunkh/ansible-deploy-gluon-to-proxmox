@@ -2,16 +2,19 @@
 
 - hosts: mnesia
   vars:
-    storage_group: local-hdd
     gluon_image_url: https://hannover.freifunk.net/download/Router-Firmware/Erstinstallation/gluon-ffh-vH21-x86-64.img.gz
     wan_bridge: vmbr0
     gluon_hostname: fftestnode1
+    proxmox_user: "ansible-test@pve"
+    proxmox_password: "{{ proxmox_api_password }}"
+    proxmox_node: "mnesia"
+    proxmox_storage_group: local-hdd
   tasks:
-    - name: Ensure specified storage_group {{storage_group}} is a zfs pool
-      command: "grep '^zfspool: {{storage_group}}$' /etc/pve/storage.cfg"
+    - name: Ensure specified proxmox_storage_group {{proxmox_storage_group}} is a zfs pool
+      command: "grep '^zfspool: {{proxmox_storage_group}}$' /etc/pve/storage.cfg"
       changed_when: False
 
-    - name: Get the pool of storage_group
+    - name: Get the pool of proxmox_storage_group
       command: "awk '/^zfspool: local-hdd$/ { start=1; } /^\tpool/ { if (start) { print $2; exit 0 } }' /etc/pve/storage.cfg"
       register: zfs_pool_stdout
       changed_when: False
@@ -30,14 +33,14 @@
     - name: Create new VM with minimal options
       community.general.proxmox_kvm:
         proxmox_default_behavior: no_defaults
-        api_user: ansible-test@pve
-        api_password: "{{ proxmox_api_password }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
         api_host: localhost
         name: "{{ gluon_hostname }}"
-        node: mnesia
+        node: "{{ proxmox_node }}"
         format: raw
         ide:
-          ide1: '{{storage_group}}:1,format=raw'
+          ide1: '{{proxmox_storage_group}}:1,format=raw'
         net:
           net0: 'e1000,bridge=vmbr{{ 20000 + (next_vmid.stdout_lines[0] | int) }}'
           net1: 'e1000,bridge={{ wan_bridge }}'
@@ -100,11 +103,11 @@
     - name: Start VM
       community.general.proxmox_kvm:
         proxmox_default_behavior: no_defaults
-        api_user: ansible-test@pve
+        api_user: "{{ proxmox_user }}"
         api_password: "{{ proxmox_api_password }}"
         api_host: localhost
-        name: fftestnode1
-        node: mnesia
+        name: "{{ gluon_hostname }}"
+        node: "{{ proxmox_node }}"
         state: started
 
     - name: Configure the Gluon Image
