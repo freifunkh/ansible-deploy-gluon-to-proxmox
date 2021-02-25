@@ -122,14 +122,22 @@
           shell: "while ! nc -z 192.168.1.1 22; do echo nope; done"
 
         # TODO: Do more configureation here...
-        - name: Leave config mode
+        - name: Configure the Gluon Node
           command: |
             ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
               pretty-hostname '{{ gluon_hostname }}'
               uci set gluon-setup-mode.@setup_mode[0].configured='1'
               uci commit
-              reboot
             "
 
-        - name: Remove config mode ip 192.168.1.2/24 to client_bridge
-          command: "/sbin/ip a d 192.168.1.2/24 dev {{ client_bridge }}"
+        - name: Leave config mode
+          when: "gluon_leave_config_mode | default(True) | bool"
+          block:
+            - name: Reboot
+              command: |
+                ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+                  reboot
+                "
+
+            - name: Remove config mode ip 192.168.1.2/24 to client_bridge
+              command: "/sbin/ip a d 192.168.1.2/24 dev {{ client_bridge }}"

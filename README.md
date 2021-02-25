@@ -19,3 +19,9 @@ Some notes:
 - A bridge `vmbr20106` is created for the vm with id 106. This bridge is used
   for the client interface of the node.
 - Ssh is used to configure the nodes and leave config mode.
+
+
+For testing purposes:
+``` shell
+ansible-playbook  -e gluon_leave_config_mode=false test.yml
+```
