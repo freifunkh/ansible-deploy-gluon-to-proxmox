@@ -1,0 +1,166 @@
+---
+
+# This is necessary to set the bridge client_bridge for the proxmox statement.
+# As the vmid is not known yet, we have to find it out here.
+- name: Predict next vmid
+  command: /usr/bin/pvesh get /cluster/nextid
+  register: next_vmid
+  changed_when: False
+
+- name: Generate random mac
+  set_fact:
+    gluon_client_mac: "{{ '52:54:00' | community.general.random_mac(seed=inventory_hostname+gluon_hostname) }}"
+
+- name: Create new VM with minimal options
+  community.general.proxmox_kvm:
+    proxmox_default_behavior: no_defaults
+    api_user: "{{ proxmox_user }}"
+    api_password: "{{ proxmox_password }}"
+    api_host: localhost
+    name: "{{ gluon_hostname }}"
+    node: "{{ proxmox_node }}"
+    format: raw
+    ide:
+      ide1: '{{proxmox_storage_group}}:1,format=raw'
+    net:
+      net0: 'e1000={{gluon_client_mac}},bridge=vmbr{{ 20000 + (next_vmid.stdout_lines[0] | int) }}'
+      net1: 'e1000,bridge={{ wan_bridge }}'
+  register: proxmox_create
+
+- name: Install Gluon Image
+  when: proxmox_create.changed
+  block:
+
+    # Warning: The proxmox_create variable always contains a "vmid". However
+    #          the "vmid" is wrong, if the node was existing before. Therefore
+    #          the variable should only be used if proxmox_create.changed.
+    - name: Set vmid variable
+      set_fact:
+        vmid: "{{ proxmox_create.vmid }}"
+
+    - name: Set client_bridge variable
+      set_fact:
+        client_bridge: "vmbr{{ 20000 + (vmid | int) }}"
+
+    - name: Ensure client_bridge {{ client_bridge }}
+      include_tasks: ensure_bridge.yml
+      vars:
+        bridge_if: "{{ client_bridge }}"
+
+    # - name: debug
+    #  debug: var=proxmox_create
+    # TASK [debug] ****************************
+    # ok: [mnesia] => {
+    #     "proxmox_create": {
+    #         "changed": true,
+    #         "devices": {
+    #             "ide1": "local-hdd:vm-106-disk-0"
+    #         },
+    #         "failed": false,
+    #         "mac": {},
+    #         "msg": "VM fftestnode1 with vmid 106 deployed",
+    #         "vmid": 106
+    #     }
+    # }
+
+    - name: Store zfs volume in variable zfs_volume
+      set_fact:
+        zfs_volume: "{{ proxmox_create.devices.ide1.split(':')[1] }}"
+
+    - name: debug
+      debug: var=zfs_volume
+
+    - name: debug
+      debug: var=zfs_pool
+
+    - name: Download Router Image
+      get_url:
+        url: "{{ gluon_image_url }}"
+        dest: /tmp/gluon_image.gz
+
+    - name: Unzip to /dev/zvol/{{ zfs_pool }}/{{ zfs_volume }}
+      shell: "gunzip /tmp/gluon_image.gz -c | dd iflag=fullblock of=/dev/zvol/{{ zfs_pool}}/{{ zfs_volume}} bs=4M"
+
+- name: Start VM
+  community.general.proxmox_kvm:
+    proxmox_default_behavior: no_defaults
+    api_user: "{{ proxmox_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    api_host: localhost
+    name: "{{ gluon_hostname }}"
+    node: "{{ proxmox_node }}"
+    state: started
+
+- name: Configure the Gluon Image
+  when: proxmox_create.changed
+  block:
+    - name: Temporarily add config mode ip 192.168.1.2/24 to client_bridge
+      # "ip addr replace" adds or replaces the ip
+      command: "/sbin/ip addr replace 192.168.1.2/24 dev {{ client_bridge }}"
+
+    - name: Wait for ssh on node to become reachable
+      # "nc -z" just connects and closes the connection then.
+      shell: "while ! nc -z 192.168.1.1 22; do echo nope; done"
+
+    # TODO: Do more configureation here...
+    - name: Configure the Gluon Node
+      command: |
+        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+          pretty-hostname '{{ gluon_hostname }}'
+          uci set gluon-setup-mode.@setup_mode[0].configured='1'
+          uci commit
+        "
+
+    - name: Check if the node is fastd or wireguard
+      command: |
+        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+          test -f /lib/gluon/mesh-vpn/wireguard_pubkey.sh
+        "
+      register: vpn_type_is_wireguard
+      failed_when: False
+
+    - name: VPN Type Wireguard
+      when: "vpn_type_is_wireguard.rc == 0"
+      block:
+        - name: VPN Type Wireguard - Obtain VPN Key
+          command: |
+            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+              /lib/gluon/mesh-vpn/wireguard_pubkey.sh
+            "
+          register: vpn_key
+
+        - name: VPN Type Wireguard - Set vpn type
+          set_fact:
+            vpn_type: wireguard
+
+    - name: VPN Type Fastd
+      when: "vpn_type_is_wireguard.rc != 0"
+      block:
+        - name: VPN Type Fastd - Obtain VPN Key
+          command: |
+            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+              /etc/init.d/fastd show_key mesh_vpn
+            "
+          register: vpn_key
+
+        - name: VPN Type Fastd - Set vpn type
+          set_fact:
+            vpn_type: fastd
+
+    - name: Store VPN Key
+      local_action: copy
+      args:
+        content: "{{ vpn_key.stdout_lines[0] }}\n"
+        dest: "{{ vpn_type }}_pubkeys/{{gluon_hostname}}"
+
+    - name: Leave config mode
+      when: "gluon_leave_config_mode | default(True) | bool"
+      block:
+        - name: Reboot
+          command: |
+            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
+              reboot
+            "
+
+        - name: Remove config mode ip 192.168.1.2/24 to client_bridge
+          command: "/sbin/ip a d 192.168.1.2/24 dev {{ client_bridge }}"
