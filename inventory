@@ -4,4 +4,5 @@ all:
     mnesia:
       ansible_host: mnesia
 
-  
+gluon_nodes:
+  ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p mnesia" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'

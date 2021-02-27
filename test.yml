@@ -1,6 +1,8 @@
 ---
 
 - hosts: mnesia
+  roles:
+    - gekmihesg.openwrt
   vars:
     gluon_image_url: https://hannover.freifunk.net/download/Router-Firmware/Erstinstallation/gluon-ffh-vH21-x86-64.img.gz
     wan_bridge: vmbr0

@@ -102,56 +102,19 @@
       # "nc -z" just connects and closes the connection then.
       shell: "while ! nc -z 192.168.1.1 22; do echo nope; done"
 
-    # TODO: Do more configureation here...
-    - name: Configure the Gluon Node
-      command: |
-        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-          pretty-hostname '{{ gluon_hostname }}'
-          uci set gluon-setup-mode.@setup_mode[0].configured='1'
-          uci commit
-        "
+    - name: Add new host
+      add_host:
+        name: '{{ gluon_hostname }}'
+        groups:
+          - gluon_nodes
+          - openwrt
+        hostname: "192.168.1.1"
+        ansible_host: "192.168.1.1"
+        ansible_user: root
+        ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p mnesia" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'
 
-    - name: Check if the node is fastd or wireguard
-      command: |
-        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-          test -f /lib/gluon/mesh-vpn/wireguard_pubkey.sh
-        "
-      register: vpn_type_is_wireguard
-      failed_when: False
-
-    - name: VPN Type Wireguard
-      when: "vpn_type_is_wireguard.rc == 0"
-      block:
-        - name: VPN Type Wireguard - Obtain VPN Key
-          command: |
-            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-              /lib/gluon/mesh-vpn/wireguard_pubkey.sh
-            "
-          register: vpn_key
-
-        - name: VPN Type Wireguard - Set vpn type
-          set_fact:
-            vpn_type: wireguard
-
-    - name: VPN Type Fastd
-      when: "vpn_type_is_wireguard.rc != 0"
-      block:
-        - name: VPN Type Fastd - Obtain VPN Key
-          command: |
-            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-              /etc/init.d/fastd show_key mesh_vpn
-            "
-          register: vpn_key
-
-        - name: VPN Type Fastd - Set vpn type
-          set_fact:
-            vpn_type: fastd
-
-    - name: Store VPN Key
-      local_action: copy
-      args:
-        content: "{{ vpn_key.stdout_lines[0] }}\n"
-        dest: "{{ vpn_type }}_pubkeys/{{gluon_hostname}}"
+    - name: Configure Node
+      include_tasks: configure_gluon_node.yml
 
     - name: Leave config mode
       when: "gluon_leave_config_mode | default(True) | bool"
