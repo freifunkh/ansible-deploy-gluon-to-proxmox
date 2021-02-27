@@ -1,5 +1,8 @@
 ---
 
+- name: Prefer netcat-openbsd over gnu netcat
+  apt: pkg=netcat-openbsd
+
 # This is necessary to set the bridge client_bridge for the proxmox statement.
 # As the vmid is not known yet, we have to find it out here.
 - name: Predict next vmid
@@ -7,9 +10,17 @@
   register: next_vmid
   changed_when: False
 
-- name: Generate random mac
+- name: Generate some variables
   set_fact:
     gluon_client_mac: "{{ '52:54:00' | community.general.random_mac(seed=inventory_hostname+gluon_hostname) }}"
+    vmid: "{{ next_vmid.stdout_lines[0] | int }}"
+
+- name: Calculate link-local address
+  set_fact:
+    lladdr: "{{ gluon_client_mac | mac2ipv6 }}%vmbr{{ 20000 + (vmid | int)}}"
+
+- name: debug
+  debug: var=lladdr
 
 - name: Create new VM with minimal options
   community.general.proxmox_kvm:
@@ -23,20 +34,13 @@
     ide:
       ide1: '{{proxmox_storage_group}}:1,format=raw'
     net:
-      net0: 'e1000={{gluon_client_mac}},bridge=vmbr{{ 20000 + (next_vmid.stdout_lines[0] | int) }}'
+      net0: 'e1000={{gluon_client_mac}},bridge=vmbr{{ 20000 + (vmid | int) }}'
       net1: 'e1000,bridge={{ wan_bridge }}'
   register: proxmox_create
 
 - name: Install Gluon Image
   when: proxmox_create.changed
   block:
-
-    # Warning: The proxmox_create variable always contains a "vmid". However
-    #          the "vmid" is wrong, if the node was existing before. Therefore
-    #          the variable should only be used if proxmox_create.changed.
-    - name: Set vmid variable
-      set_fact:
-        vmid: "{{ proxmox_create.vmid }}"
 
     - name: Set client_bridge variable
       set_fact:
@@ -94,13 +98,9 @@
 - name: Configure the Gluon Image
   when: proxmox_create.changed
   block:
-    - name: Temporarily add config mode ip 192.168.1.2/24 to client_bridge
-      # "ip addr replace" adds or replaces the ip
-      command: "/sbin/ip addr replace 192.168.1.2/24 dev {{ client_bridge }}"
-
     - name: Wait for ssh on node to become reachable
       # "nc -z" just connects and closes the connection then.
-      shell: "while ! nc -z 192.168.1.1 22; do echo nope; done"
+      shell: "while ! nc -z {{ lladdr }} 22; do echo nope; done"
 
     - name: Add new host
       add_host:
@@ -108,8 +108,8 @@
         groups:
           - gluon_nodes
           - openwrt
-        hostname: "192.168.1.1"
-        ansible_host: "192.168.1.1"
+        hostname: "{{ lladdr }}"
+        ansible_host: "[{{ lladdr }}]"
         ansible_user: root
         ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p mnesia" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'
 
@@ -120,10 +120,5 @@
       when: "gluon_leave_config_mode | default(True) | bool"
       block:
         - name: Reboot
-          command: |
-            ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-              reboot
-            "
-
-        - name: Remove config mode ip 192.168.1.2/24 to client_bridge
-          command: "/sbin/ip a d 192.168.1.2/24 dev {{ client_bridge }}"
+          command: reboot
+          delegate_to: '{{ gluon_hostname }}'

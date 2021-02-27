@@ -4,31 +4,32 @@
   command: pretty-hostname '{{ gluon_hostname }}'
   delegate_to: '{{ gluon_hostname }}'
 
-# TODO: Do more configureation here...
-- name: Configure the Gluon Node
-  command: |
-    ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-      uci set gluon-setup-mode.@setup_mode[0].configured='1'
-      uci commit
-    "
+- name: Set Configured Flag on Gluon
+  uci:
+    command: set
+    key: "gluon-setup-mode.@setup_mode[0]"
+    value:
+      configured: 1
+  delegate_to: '{{ gluon_hostname }}'
+
+- name: UCI Commit
+  uci:
+    command: commit
+  delegate_to: '{{ gluon_hostname }}'
 
 - name: Check if the node is fastd or wireguard
-  command: |
-    ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-      test -f /lib/gluon/mesh-vpn/wireguard_pubkey.sh
-    "
+  command: test -f /lib/gluon/mesh-vpn/wireguard_pubkey.sh
   register: vpn_type_is_wireguard
   failed_when: False
+  delegate_to: '{{ gluon_hostname }}'
 
 - name: VPN Type Wireguard
   when: "vpn_type_is_wireguard.rc == 0"
   block:
     - name: VPN Type Wireguard - Obtain VPN Key
-      command: |
-        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-          /lib/gluon/mesh-vpn/wireguard_pubkey.sh
-        "
+      command: /lib/gluon/mesh-vpn/wireguard_pubkey.sh
       register: vpn_key
+      delegate_to: '{{ gluon_hostname }}'
 
     - name: VPN Type Wireguard - Set vpn type
       set_fact:
@@ -38,11 +39,9 @@
   when: "vpn_type_is_wireguard.rc != 0"
   block:
     - name: VPN Type Fastd - Obtain VPN Key
-      command: |
-        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.1.1 "
-          /etc/init.d/fastd show_key mesh_vpn
-        "
+      command: /etc/init.d/fastd show_key mesh_vpn
       register: vpn_key
+      delegate_to: '{{ gluon_hostname }}'
 
     - name: VPN Type Fastd - Set vpn type
       set_fact:
